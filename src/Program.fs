@@ -1,6 +1,7 @@
 ﻿open System
 open System.IO
 open FSharp.Data
+open FsToolkit.ErrorHandling.ValidationCE
 
 type Population = {
     IsoCode : string
@@ -20,19 +21,24 @@ type Result = {
     PopulationDelta : int
 }
 
+type ValidInput = { 
+    IsoCode : string 
+}
+
+type ValidationError =
+| MissingData of name: string
+
 let removeComma(s: string) = s.Replace(",", "")
 let toInt(s: string) = Int32.Parse(s)
-let path = Path.Combine(__SOURCE_DIRECTORY__, "resources")
-let files = Directory.GetFiles(path, "*.csv")
 
-let load =
+let load (files: string[])=
     files
     |> Seq.map CsvFile.Load
     |> Seq.fold (fun acc file -> Seq.append acc file.Rows ) []
 
 let parse (data:seq<CsvRow>) = 
     data
-    |> Seq.map (fun line -> 
+    |> Seq.choose (fun line -> 
         match line.Columns with
         | [| isoCode; country; lastUpdate; population; area; landArea; densitySq; growthRate; worldPersnt; rank|] -> 
             Some { 
@@ -49,27 +55,47 @@ let parse (data:seq<CsvRow>) =
             }
         | _ -> None
     )
-    |> Seq.choose id
+
+let (|IsEmptyString|_|) (input:string) =
+    if input.Trim() = "" then Some () else None
+
+let (|IsNotInt|_|) (input:string) =
+    let (success, _) = input |> Int32.TryParse
+    if success then None else Some input
+
+let validateInput (args:string) = 
+    if args <> "" then Ok args
+    else Error (MissingData "Invalid args")
+
+let create isoInput = { IsoCode = isoInput }  
+
+let validate (argv: string) : Result<ValidInput,ValidationError list> =
+  validation {
+    let! isoCode = 
+        argv 
+        |> validateInput 
+        |> Result.mapError (fun ex -> [ ex ])
+    return create isoCode
+  }
 
 let populationSeq(data: seq<Population>) = 
     data
     |> Seq.map (fun p -> p.Population)     
-
 
 let populationHead(data: seq<Population>) =
     data
     |> populationSeq
     |> Seq.head 
 
-let populationDelta(data:seq<Population>) =    
-    let head = populationHead(data)
-    data
+let populationDelta(data:seq<Population>) = 
+     data
     |> populationSeq
     |> Seq.skip 1
-    |> Seq.fold(fun acc i -> acc - i) head
+    |> Seq.reduce(fun acc i -> acc - i) 
 
-let populationСhange(data: seq<Population>) =
+let populationСhange(isoCode:Result<ValidInput,ValidationError list> ) (data: seq<Population>) =    
     data
+    |> Seq.filter(fun p -> p.IsoCode.Equals(isoCode))
     |> Seq.groupBy (fun p -> p.IsoCode) 
     |> Seq.map (fun (key, value) -> { 
        IsoCode = key 
@@ -78,9 +104,10 @@ let populationСhange(data: seq<Population>) =
 
 [<EntryPoint>]
 let main argv =
-    load
+    let isoCode = validate argv[0]
+    let path = Path.Combine(__SOURCE_DIRECTORY__, "resources")
+    load (Directory.GetFiles(path, "*.csv"))
     |> parse
-    |> populationСhange
-    |> Seq.filter(fun p -> p.IsoCode.Equals(argv.[0]))
+    |> populationСhange isoCode
     |> Seq.iter (fun p -> printfn "%A" p)
     0
